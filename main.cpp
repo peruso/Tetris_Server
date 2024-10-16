@@ -82,12 +82,13 @@ class TetrisServer {
       broadcast_grid_data(grids);
     }
 
-    void processBlockData (const BlockData& blockData) {
+    void processBlockData (BlockData& blockData) {
         std::cout << "Received block data:\n";
         for (const auto& pos : blockData.positions) {
           std::cout << "Position: (" << pos.pos_row << ", " << pos.pos_column << ")\n";
         }
         std::cout << "Block color index: " << blockData.indexColor << std::endl;
+        broadcast_block_data(blockData);
     }
 
     void identifyReceivedData(std::shared_ptr<tcp::socket> socket) {
@@ -129,6 +130,30 @@ class TetrisServer {
     //             }
     //     }
     // }
+
+    void broadcast_block_data(BlockData& blockData) {
+      std::lock_guard<std::mutex> lock(clients_mutex_);
+      std::cout << "Broadcasting block data to clients...\n";
+
+      int identifier = 1; // for block data
+      std::array<char, sizeof(Position) * 4 + sizeof(int) + sizeof(int)> buffer;
+      std::memcpy(buffer.data(), &identifier, sizeof(int));  // 先頭に識別子を追加
+      std::memcpy(buffer.data() + sizeof(int), blockData.positions.data(), sizeof(Position) * 4);  // ブロックの位置データをコピー
+      std::memcpy(buffer.data() + sizeof(int) + sizeof(Position) * 4, &blockData.indexColor, sizeof(int));  // indexColorをコピー
+      for (auto& client : clients_) {
+          if (client->is_open()) {
+              try {
+                  boost::asio::write(*client, boost::asio::buffer(buffer));
+                  std::cout << "Block data sent to a client.\n";
+              } catch (const std::exception& e) {
+                  std::cerr << "Error sending block data to client: " << e.what() << std::endl;
+              }
+          }
+      }
+
+
+
+    }
 
     void broadcast_grid_data(int (&grids)[20][10]) {
       std::lock_guard<std::mutex> lock(clients_mutex_);
