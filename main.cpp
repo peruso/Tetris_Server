@@ -16,6 +16,10 @@ struct BlockData {
   std::array<Position, 4> positions;
   int indexColor;
 };
+struct MultiplayerData {
+std::string name;
+std::string score;
+};
 
 class TetrisServer {
   public:
@@ -25,6 +29,7 @@ class TetrisServer {
     };
 
   private:
+    std::vector<int> listPlayerWithConsensus;
     void start_accept() {
       auto socket = std::make_shared<tcp::socket>(acceptor_.get_executor());
       acceptor_.async_accept(*socket, [this, socket](boost::system::error_code ec) {
@@ -91,6 +96,14 @@ class TetrisServer {
         broadcast_block_data(blockData, sender_socket);
     }
 
+    void processPlayerData (MultiplayerData& playerData, std::shared_ptr<tcp::socket> sender_socket) {
+      std::cout << "Received player data:\n";
+        
+        std::cout << "Player Name: " << playerData.name << std::endl;
+        std::cout << "Player Score: " << playerData.score << std::endl;
+        broadcast_player_data(playerData, sender_socket);
+    }
+
     void identifyReceivedData(std::shared_ptr<tcp::socket> socket) {
       int identifier;
       boost::asio::read(*socket, boost::asio::buffer(&identifier, sizeof(int)));
@@ -108,9 +121,49 @@ class TetrisServer {
         boost::asio::read(*socket, boost::asio::buffer(&blockData.indexColor, sizeof(int)));
         // ブロックデータを処理
         processBlockData(blockData, socket); 
+    } else if (identifier == 2) {
+      int clientCount = getClientCount();
+      boost::asio::write(*socket, boost::asio::buffer(&clientCount, sizeof(int)));
+      // for (auto& client : clients_) {
+      //     if (client->is_open()) {
+      //         try {
+      //             boost::asio::write(*client, boost::asio::buffer(&clientCount, sizeof(int)));
+      //         } catch (const std::exception& e) {
+      //             std::cerr << "Error sending clientCount: " << e.what() << std::endl;
+      //         }
+      //     }
+      // }
+      std::cout << "Sent client count: " << clientCount << std::endl;
+    } else if (identifier == 3) {
+      bool isAbleToStartGame = takeConsensusToStartGame();
+      boost::asio::write(*socket, boost::asio::buffer(&isAbleToStartGame, sizeof(bool)));
+    } else if (identifier == 4) {
+    MultiplayerData playerData;
+    int nameLength;
+    int scoreLength;
 
-    }
-    }
+    // 名前の長さを読み込む
+    boost::asio::read(*socket, boost::asio::buffer(&nameLength, sizeof(int)));
+
+    // 名前自体を読み込むバッファを確保し、その後 playerData.name にセット
+    std::vector<char> nameBuffer(nameLength);
+    boost::asio::read(*socket, boost::asio::buffer(nameBuffer.data(), nameLength));
+    playerData.name = std::string(nameBuffer.begin(), nameBuffer.end());
+
+    // スコアの長さを読み込む
+    boost::asio::read(*socket, boost::asio::buffer(&scoreLength, sizeof(int)));
+
+    // スコア自体を読み込むバッファを確保し、その後 playerData.score にセット
+    std::vector<char> scoreBuffer(scoreLength);
+    boost::asio::read(*socket, boost::asio::buffer(scoreBuffer.data(), scoreLength));
+    playerData.score = std::string(scoreBuffer.begin(), scoreBuffer.end());
+
+    // データを処理
+    processPlayerData(playerData, socket);
+}
+
+  }
+    
 
      // 受信したグリッドデータを他のクライアントに送信する
     // void broadcast_grid_data(int (&grids)[20][10]) {
@@ -131,6 +184,23 @@ class TetrisServer {
     //     }
     // }
 
+    int getClientCount() {
+      std::lock_guard<std::mutex> lock(clients_mutex_);
+      return clients_.size();
+    }
+
+    bool takeConsensusToStartGame() {
+      std::lock_guard<std::mutex> lock(clients_mutex_);
+      listPlayerWithConsensus.push_back(1);
+      if (listPlayerWithConsensus.size() >=2) {
+        return true;
+      }
+      else {
+        return false;
+      }
+
+    }
+
     void broadcast_block_data(BlockData& blockData, std::shared_ptr<tcp::socket> sender_socket) {
       std::lock_guard<std::mutex> lock(clients_mutex_);
       std::cout << "Broadcasting block data to clients...\n";
@@ -150,9 +220,56 @@ class TetrisServer {
               }
           }
       }
+    }
 
+    void broadcast_player_data(MultiplayerData& playerData, std::shared_ptr<tcp::socket> sender_socket) {
+      std::lock_guard<std::mutex> lock(clients_mutex_);
+      std::cout << "Broadcasting player data to clients...\n";
 
+      int identifier = 4; // for player data
+      int nameLength = playerData.name.size();
 
+      int scoreLength = playerData.score.size();
+
+    // Calculate buffer size to accommodate both strings and their lengths
+    std::size_t bufferSize = sizeof(int)           // identifier
+                           + sizeof(int)           // name length
+                           + nameLength            // name itself
+                           + sizeof(int)           // score length
+                           + scoreLength;          // score itself
+
+      std::vector<char> buffer(bufferSize); // 動的なバッファ作成
+      char* ptr = buffer.data();
+
+      // 識別子をバッファに追加
+      std::memcpy(ptr, &identifier, sizeof(int));
+      ptr += sizeof(int);
+
+      // 名前の長さをバッファに追加
+      std::memcpy(ptr, &nameLength, sizeof(int));
+      ptr += sizeof(int);
+
+      // 名前自体をバッファに追加
+      std::memcpy(ptr, playerData.name.c_str(), nameLength);
+      ptr += nameLength;
+
+      // Copy the score length into the buffer
+      std::memcpy(ptr, &scoreLength, sizeof(int));
+      ptr += sizeof(int);
+
+      // Copy the score itself into the buffer
+      std::memcpy(ptr, playerData.score.c_str(), scoreLength);
+
+      for (auto& client : clients_) {
+          if (client != sender_socket && client->is_open()) {
+              try {
+                  boost::asio::write(*client, boost::asio::buffer(buffer));
+                  std::cout << "Player data sent to a client.\n";
+              } catch (const std::exception& e) {
+                  std::cerr << "Error sending block data to client: " << e.what() << std::endl;
+              }
+          }
+      }
     }
 
     void broadcast_grid_data(int (&grids)[20][10], std::shared_ptr<tcp::socket> sender_socket) {
@@ -192,6 +309,7 @@ class TetrisServer {
 
 boost::asio::io_context* global_io_context = nullptr;
 
+
 void signal_handler(int) {
   if (global_io_context) {
     global_io_context->stop();
@@ -210,7 +328,7 @@ int main() {
     int port = 12345;
     TetrisServer server(io_context, port);
 
-    std::cout << "Chat Server is running on port " << port << "...\n";
+    std::cout << "Server is running on port " << port << "...\n";
     io_context.run();
 
   } catch (std::exception& e) {
