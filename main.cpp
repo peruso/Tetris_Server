@@ -28,12 +28,13 @@ class TetrisServer {
       : acceptor_(io_context, tcp::endpoint(tcp::v4(), port)) {
       start_accept();
     };
+    std::vector<int> listPlayerWithConsensus;//publicに変えたら初期値が0になった。。
 
   private:
     tcp::acceptor acceptor_;
     std::vector<std::shared_ptr<tcp::socket>> clients_;
     std::mutex clients_mutex_;
-    std::vector<int> listPlayerWithConsensus;
+    
 
     void start_accept() {
       auto socket = std::make_shared<tcp::socket>(acceptor_.get_executor());
@@ -123,7 +124,9 @@ class TetrisServer {
       } 
       else if (identifier == 3) {//To check if we can start a game
         bool isAbleToStartGame = takeConsensusToStartGame();
-        boost::asio::write(*socket, boost::asio::buffer(&isAbleToStartGame, sizeof(bool)));
+ 
+        // boost::asio::write(*socket, boost::asio::buffer(&isAbleToStartGame, sizeof(bool)));
+
       } 
       else if (identifier == 4) {//Player Data
         MultiplayerData playerData;
@@ -150,14 +153,55 @@ class TetrisServer {
 
     bool takeConsensusToStartGame() {
       std::lock_guard<std::mutex> lock(clients_mutex_);
+      std::cout<<"number of players with consensus: "<<listPlayerWithConsensus.size()<<std::endl;
       listPlayerWithConsensus.push_back(1);
+      std::cout<<"number of players with consensus: "<<listPlayerWithConsensus.size()<<std::endl;
       if (listPlayerWithConsensus.size() >=2) {
+        std::cout<<"passed"<<std::endl;
+        broadcast_game_start_decision(true);
+        std::cout<<"passed2"<<std::endl;
         return true;
       }
       else {
         return false;
       }
     }
+
+    void broadcast_game_start_decision(bool isAbleToStartGame) {
+//     std::lock_guard<std::mutex> lock(clients_mutex_);
+    std::cout << "Broadcasting game start decision to clients...\n";
+
+    // int identifier = 3; // identifier for game start decision
+    // std::array<char, sizeof(bool) + sizeof(int)> buffer;
+    // std::memcpy(buffer.data(), &identifier, sizeof(int));  // 先頭に識別子を追加
+    // std::memcpy(buffer.data() + sizeof(int), &isAbleToStartGame, sizeof(bool)); 
+    std::array<char, sizeof(bool) > buffer;
+
+    std::memcpy(buffer.data(), &isAbleToStartGame, sizeof(bool)); 
+
+
+//     // Prepare the buffer for the game start decision
+//     std::vector<char> buffer(sizeof(int) + sizeof(bool)); // identifier + bool
+//     char* ptr = buffer.data();
+
+//     // Copy the identifier and decision into the buffer
+//     std::memcpy(ptr, &identifier, sizeof(int));
+//     ptr += sizeof(int);
+//     std::memcpy(ptr, &isAbleToStartGame, sizeof(bool));
+
+//     // Send the buffer to all connected clients
+    for (auto& client : clients_) {
+        if (client->is_open()) {
+            try {
+                boost::asio::write(*client, boost::asio::buffer(buffer));
+                std::cout << "Game start decision sent to a client.\n";
+            } catch (const std::exception& e) {
+                std::cerr << "Error sending game start decision to client: " << e.what() << std::endl;
+            }
+        }
+    }
+}
+
 
     void broadcast_block_data(BlockData& blockData, std::shared_ptr<tcp::socket> sender_socket) {
       std::lock_guard<std::mutex> lock(clients_mutex_);
@@ -276,6 +320,8 @@ int main() {
 
     int port = 12345;
     TetrisServer server(io_context, port);
+
+    std::cout<<"Initial size of list" <<server.listPlayerWithConsensus.size()<<std::endl;
 
     std::cout << "Server is running on port " << port << "...\n";
     io_context.run();
